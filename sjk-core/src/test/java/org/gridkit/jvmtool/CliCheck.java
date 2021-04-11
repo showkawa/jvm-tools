@@ -25,60 +25,83 @@ import javax.management.NotCompliantMBeanException;
 import javax.management.ObjectName;
 
 import org.junit.Assert;
+import org.junit.Assume;
+import org.junit.FixMethodOrder;
 import org.junit.Ignore;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.runners.MethodSorters;
 
 /**
  * JUnit command runner.
- *  
+ *
  * @author Alexey Ragozin (alexey.ragozin@gmail.com)
  */
+@FixMethodOrder(MethodSorters.NAME_ASCENDING)
 public class CliCheck {
+
+    private static final boolean JAVA_6 = System.getProperty("java.version").startsWith("1.6");
+
+    private static final boolean JAVA_7 = System.getProperty("java.version").startsWith("1.7");
+
 
     private static String PID;
     static {
         PID = ManagementFactory.getRuntimeMXBean().getName();
         PID = PID.substring(0, PID.indexOf('@'));
     }
-    
+
+    @Rule
+    public CliCheckRule rule = new CliCheckRule();
+
+    @Rule
+    public ConsoleRule stdOut = ConsoleRule.out();
+
+    @Rule
+    public ConsoleRule stdErr = ConsoleRule.err();
+
     private String call1arg1;
     private String call2arg1;
     private String call2arg2;
     private String[] call3args;
-    
+
     {
         try {
             ObjectName name = new ObjectName("test:bean=TestBean");
             DummyMBean bean = new DummyMBean() {
-                
+
                 @Override
                 public void callStringArrayArg(String[] args) {
                     call3args = args;
                 }
-                
+
                 @Override
                 public void callSingleStringArg(String arg) {
-                    call1arg1 = arg;                
+                    call1arg1 = arg;
                 }
-                
+
                 @Override
                 public void callDoubleStringArg(String arg1, String arg2) {
                     call2arg1 = arg1;
-                    call2arg2 = arg2;               
+                    call2arg2 = arg2;
                 }
             };
+            try {
+                ManagementFactory.getPlatformMBeanServer().unregisterMBean(name);
+            } catch (Exception e) {
+                // ignore
+            }
             ManagementFactory.getPlatformMBeanServer().registerMBean(bean, name);
         } catch (MalformedObjectNameException e) {
             throw new RuntimeException(e);
         } catch (InstanceAlreadyExistsException e) {
             throw new RuntimeException(e);
         } catch (MBeanRegistrationException e) {
-            throw new RuntimeException(e);
         } catch (NotCompliantMBeanException e) {
             throw new RuntimeException(e);
         }
     }
-    
+
     @Test
     public void help() {
         exec("--help");
@@ -88,21 +111,35 @@ public class CliCheck {
     public void list_commands() {
         exec("--commands");
     }
-    
+
     @Test
     public void jps() {
         exec("jps");
+
+        // some PID something expected
+        stdOut.lineEx("[0-9]+\\s.*");
+    }
+
+    static String KEY = String.valueOf(System.currentTimeMillis());
+    static {
+        System.setProperty("my.prop", KEY);
+    }
+
+
+    @Test
+    public void jps_filter1_by_prop() {
+        exec("jps", "-fp", "my.*=" + KEY);
+
+        // some PID something expected
+        stdOut.lineEx("[0-9]+\\s.*junit.*");
     }
 
     @Test
-    public void jps_filter_by_prop() {
-        System.setProperty("my.prop", "123");
-        exec("jps", "-fp", "my.*=123");
-    }
-
-    @Test
-    public void jps_filter_by_desc() {
+    public void jps_filter2_by_desc() {
         exec("jps", "-fd", "*junit*");
+
+        // some PID something expected
+        stdOut.lineEx("[0-9]+\\s.*junit.*");
     }
 
     @Test
@@ -115,30 +152,30 @@ public class CliCheck {
         exec("jps", "-pd", "PID", "MAIN", "XMaxHeapSize", "XBackgroundCompilation");
     }
 
-    @Test @Ignore
+    @Test @CheckDuration(10)
     public void ttop_self() {
 
         exec("ttop", "-p", PID, "-X");
     }
 
-    @Test @Ignore
+    @Test @CheckDuration(10)
     public void ttop_top_N_cpu() {
 
         exec("ttop", "-p", PID, "-o", "CPU", "-n", "10");
     }
 
-    @Test //@Ignore
+    @Test @CheckDuration(10)
     public void ttop_top_N_alloc() {
 
         exec("ttop", "-p", PID, "-o", "ALLOC", "-n", "10");
     }
 
-    @Test @Ignore
+    @Test @CheckDuration(10)
     public void ttop_top_N_filtered() {
         exec("ttop", "-p", PID, "-f", "*RMI*", "-o", "CPU", "-n", "10");
     }
 
-    @Test @Ignore
+    @Test @CheckDuration(10) @Ignore
     public void gc_self() {
         exec("gc", "-p", PID);
     }
@@ -161,11 +198,25 @@ public class CliCheck {
     @Test
     public void hh_young_N_self() {
         exec("hh", "-p", PID, "--young", "-n", "20", "-d", "1s");
+
+        stdOut.skip();
+        stdOut.line("Garbage histogram for last 1s");
+        stdOut.skip();
+        stdOut.lineStartsEx("[ ]*20:");
+        stdOut.lineStartsEx("[ ]*Total");
     }
-    
+
     @Test
     public void mx_info() {
         exec("mx", "-p", PID, "--info", "--bean", "*:type=HotSpotDiagnostic");
+
+        stdOut.line("com.sun.management:type=HotSpotDiagnostic");
+        stdOut.line("sun.management.HotSpotDiagnostic");
+        stdOut.line(" - Information on the management interface of the MBean");
+        stdOut.line(" (A) DiagnosticOptions : CompositeData[]");
+        stdOut.line(" (O) dumpHeap(String p0, boolean p1) : void");
+        stdOut.line(" (O) getVMOption(String p0) : CompositeData");
+        stdOut.line(" (O) setVMOption(String p0, String p1) : void");
     }
 
     @Test
@@ -180,12 +231,12 @@ public class CliCheck {
 
     @Test
     public void mx_get_diagnostic_ops_csv() {
-    	exec("mx", "-p", PID, "--get", "--csv", "--bean", "*:type=HotSpotDiagnostic", "-f", "DiagnosticOptions");
+        exec("mx", "-p", PID, "--get", "--csv", "--bean", "*:type=HotSpotDiagnostic", "-f", "DiagnosticOptions");
     }
 
     @Test
     public void mx_get_system_properties_csv() {
-    	exec("mx", "-p", PID, "--get", "--csv", "--bean", "*:type=Runtime", "-f", "SystemProperties");
+        exec("mx", "-p", PID, "--get", "--csv", "--bean", "*:type=Runtime", "-f", "SystemProperties");
     }
 
     @Test
@@ -195,7 +246,34 @@ public class CliCheck {
 
     @Test
     public void mx_get_memory_pool_usage_csv() {
-    	exec("mx", "-p", PID, "--get", "--csv", "-all", "--bean", "*:type=MemoryPool,name=PS*", "-f", "Usage");
+        exec("mx", "-p", PID, "--get", "--csv", "-all", "--bean", "*:type=MemoryPool,name=PS*", "-f", "Usage");
+    }
+
+    @Test
+    public void mx_get_memory_pool_usage_peakusage() {
+        exec("mx", "-p", PID, "--get", "-all", "--bean", "*:type=MemoryPool,name=PS*", "-f", "Usage", "-f", "PeakUsage");
+    }
+
+    @Test
+    public void mx_get_memory_pool_usage_peakusage_csv() {
+        exec("mx", "-p", PID, "--get", "--csv", "-all", "--bean", "*:type=MemoryPool,name=PS*", "-f", "Usage", "-f", "PeakUsage");
+
+        stdOut.line("committed,init,max,used");
+    }
+
+    @Test
+    public void mx_get_memory_pool_usage_peakusage_csv_add_bean_name() {
+        exec("mx", "-p", PID, "--get", "--csv", "-all", "--bean", "*:type=MemoryPool,name=PS*", "-f", "Usage,PeakUsage", "--add-mbean-name");
+
+        stdOut.line("MBean,Attribute,committed,init,max,used");
+    }
+
+    @Test
+    public void mx_get_memory_pool_usage_peakusage_csv_with_projection() {
+        exec("mx", "-p", PID, "--get", "--csv", "-all", "--bean", "*:type=MemoryPool,name=PS*", "-f", "Usage,PeakUsage", "--col-list", "Attribute,-,init,used,committed");
+
+        stdOut.line("Attribute,-,init,used,committed");
+        stdOut.lineEx("(Usage|PeakUsage),,\\d+,\\d+,\\d+");
     }
 
     @Test
@@ -227,7 +305,10 @@ public class CliCheck {
     public void mx_call_method1() {
         exec("mx", "-p", PID, "--call", "--bean", "test:bean=TestBean", "-op", "callSingleStringArg", "-a", "testParam");
         Assert.assertEquals("testParam", call1arg1);
+    }
 
+    @Test
+    public void mx_call_method1a() {
         exec("mx", "-p", PID, "--call", "--bean", "test:bean=TestBean", "-op", "callSingleStringArg", "-a", "testParam1,testParam2", "-X");
         Assert.assertEquals("testParam1,testParam2", call1arg1);
     }
@@ -237,7 +318,10 @@ public class CliCheck {
         exec("mx", "-p", PID, "--call", "--bean", "test:bean=TestBean", "-op", "callDoubleStringArg", "-a", "testParam1", "testParam2");
         Assert.assertEquals("testParam1", call2arg1);
         Assert.assertEquals("testParam2", call2arg2);
-        
+    }
+
+    @Test
+    public void mx_call_method2a() {
         exec("mx", "-p", PID, "--call", "--bean", "test:bean=TestBean", "-op", "callDoubleStringArg", "-a", "testParam1", "a,b");
         Assert.assertEquals("testParam1", call2arg1);
         Assert.assertEquals("a,b", call2arg2);
@@ -247,17 +331,43 @@ public class CliCheck {
     public void mx_call_method3() {
         exec("mx", "-p", PID, "--call", "--bean", "test:bean=TestBean", "-op", "callStringArrayArg", "-a", "testParam");
         Assert.assertArrayEquals(new String[] {"testParam"}, call3args);
-        
+    }
+
+    @Test
+    public void mx_call_method3a() {
         exec("mx", "-p", PID, "--call", "--bean", "test:bean=TestBean", "-op", "callStringArrayArg", "-a", "testParam1,testParam2");
         Assert.assertArrayEquals(new String[] {"testParam1", "testParam2"}, call3args);
+    }
 
+    @Test
+    public void mx_call_method3b() {
         exec("mx", "-p", PID, "--call", "--bean", "test:bean=TestBean", "-op", "callStringArrayArg", "-a", "");
         Assert.assertNull(call3args);
     }
-    
+
     @Test
     public void mx_info_ambiguous() {
         fail("mx", "-p", PID, "--info", "--bean", "*:type=GarbageCollector,*");
+
+        stdErr.line("Ambiguous MBean selection. Use '-all' param for process all matched MBeans");
+        stdErr.lineStarts("java.lang:type=GarbageCollector,name=");
+        stdErr.lineStarts("java.lang:type=GarbageCollector,name=");
+    }
+
+    public void ensureTestStp() {
+        if (!new File("target/test.stp").isFile()) {
+            exec("stcap", "-p", PID, "-o", "target/test.stp");
+            stdOut.verify();
+            stdErr.verify();
+        }
+    }
+
+    public void ensureTestStp500() {
+        if (!new File("target/test500.stp").isFile()) {
+            exec("stcap", "-p", PID, "-l", "500", "-o", "target/test500.stp");
+            stdOut.verify();
+            stdErr.verify();
+        }
     }
 
     @Test
@@ -304,15 +414,27 @@ public class CliCheck {
     public void stcpy_tr() {
         exec("stcpy", "-X", "-tr", "00:05-00:10", "-i", "target/test.all-stp", "-tt", "javax.management.StandardMBean.invoke/+**", "-o", "target/test-time-rnaged.all-stp");
     }
-    
+
     @Test
     public void ssa_print() {
-        exec("ssa", "--print", "-f", "target/test.stp");
+        ensureTestStp500();
+        exec("ssa", "--print", "-f", "target/test500.stp");
     }
 
     @Test
-    public void ssa_print_x() {
-        exec("ssa", "--print", "-f", "target/test.cap", "-X");
+    public void ssa_print_partial_file_list() {
+        ensureTestStp500();
+        exec("ssa", "--print", "-f", "target/test500.stp", "target/test.no-such-file");
+    }
+
+    @Test @Ignore
+    public void ssa_print_some() {
+        exec("ssa", "--print", "-f", "target/test-trimmed.all-stp");
+    }
+
+    @Test
+    public void ssa_print_fail() {
+        fail("ssa", "--print", "-f", "target/test.no-such-file", "-X");
     }
 
     @Test
@@ -322,7 +444,8 @@ public class CliCheck {
 
     @Test
     public void ssa_print_thread_name() {
-        exec("ssa", "--print", "-tn", "RMI TCP Connection.*", "-f", "target/test.stp");
+        ensureTestStp500();
+        exec("ssa", "--print", "-tn", "RMI TCP Connection.*", "-f", "target/test500.stp");
     }
 
     @Test
@@ -337,7 +460,22 @@ public class CliCheck {
 
     @Test
     public void ssa_histo_term_sort() {
-	exec("ssa", "--histo", "-f", "target/test.stp", "--by-term", "-X");
+        exec("ssa", "--histo", "-f", "target/test.stp", "--by-term", "-X");
+    }
+
+    @Test
+    public void ssa_histo_term_sort2() {
+        exec("ssa", "--histo", "-f", "target/test.stp", "--sort", "TERM", "-X");
+    }
+
+    @Test
+    public void ssa_histo_occur_sort() {
+        exec("ssa", "--histo", "-f", "target/test.stp", "--sort", "OCCUR", "-X");
+    }
+
+    @Test
+    public void ssa_histo_freq_sort() {
+        exec("ssa", "--histo", "-f", "target/test.stp", "--sort", "FREQ", "-X");
     }
 
     @Test
@@ -350,12 +488,12 @@ public class CliCheck {
         exec("ssa", "--histo", "-co", "-f", "target/test.stp", "-nc", "IO=java.net.SocketInputStream", "GridKit=org.gridkit", "-X");
     }
 
-    @Test
+    @Test @Ignore
     public void ssa_histo_masked() {
         exec("ssa", "--histo", "-f", "target/test-masked.all-stp", "-X");
     }
-    
-    @Test
+
+    @Test @Ignore
     public void ssa_histo2() {
         exec("ssa", "--histo", "-f", "target/test_javax.stp", "-X");
     }
@@ -382,19 +520,22 @@ public class CliCheck {
 
     @Test
     public void ssa_flame() {
+        ensureTestStp();
         exec("ssa", "--flame", "-f", "target/test.stp");
     }
 
     @Test
     public void ssa_flame_with_trim() {
+        ensureTestStp();
         exec("ssa", "--flame", "-tt", "javax.management.remote.rmi.RMIConnectionImpl.invoke", "-f", "target/test.stp");
     }
 
     @Test
     public void ssa_flame_rainbow() {
+        ensureTestStp();
         exec("ssa", "--flame", "-f", "target/test.stp");
     }
-    
+
     @Test
     public void ssa_categorize() {
         exec("ssa", "--categorize", "-co", "-cf", "src/test/resources/sample-seam-jsf-profile.ctz", "-f", "../sjk-stacktrace/src/test/resources/jboss-10k.std");
@@ -407,17 +548,49 @@ public class CliCheck {
 
     @Test
     public void ssa_thread_info() {
+        ensureTestStp();
         exec("ssa", "--thread-info", "-f", "target/test.stp", "-X");
+        stdOut.lineEx("Name\\s+Count\\s+On CPU\\s+Alloc\\s+RUNNABLE\\s+Native");
+        stdOut.skip();
+        stdOut.lineStarts("TestThread");
     }
 
     @Test
     public void ssa_thread_info_2() {
+        ensureTestStp();
         exec("ssa", "--thread-info", "-si", "NAME", "FREQ", "FREQ_HM", "GAP_CHM", "TSMIN", "TSMAX", "CPU", "SYS", "-f", "target/test.stp", "-X");
+        stdOut.lineEx("Name\\s+Freq[.]\\s+\\QFreq. (1/HM)\\E\\s+Gap CHM\\s+First time\\s+Last time\\s+On CPU\\s+System");
+        stdOut.skip();
+        stdOut.lineStarts("TestThread");
     }
 
     @Test
     public void ssa_thread_info_3() {
+        ensureTestStp();
         exec("ssa", "--thread-info", "-si", "NAME8", "ALLOC", "Sock=java.net.SocketInputStream.socketRead0", "-f", "target/test.stp", "-X");
+        stdOut.lineEx("Name\\s+Alloc\\s+Sock");
+        stdOut.skip();
+        stdOut.lineStarts("TestThre ");
+    }
+
+    @Test
+    public void ssa_thread_info_csv() {
+        ensureTestStp();
+        exec("ssa", "--thread-info", "-co", "-f", "target/test.stp", "-X");
+        stdOut.line("Name,Count,\"On CPU\",Alloc,RUNNABLE,Native");
+        stdOut.skip();
+        stdOut.lineStartsEx("TestThread,([^,^\\n]+),([^,^\\n]+),([^,^\\n]+),([^,^\\n]+),([^,^\\n]+)",
+                null, "\"0.0%\"", "\"0/s\"", "\"0.0%\"", "\"100.0%\"");
+    }
+
+    @Test
+    public void ssa_thread_info_csv_numeric() {
+        ensureTestStp();
+        exec("ssa", "--thread-info", "-co", "--numeric", "-f", "target/test.stp", "-X");
+        stdOut.line("Name,Count,\"On CPU\",Alloc,RUNNABLE,Native");
+        stdOut.skip();
+        stdOut.lineStartsEx("TestThread,([^,^\\n]+),([^,^\\n]+),([^,^\\n]+),([^,^\\n]+),([^,^\\n]+)",
+                null, "0", "0", "0", "1");
     }
 
     @Test
@@ -427,9 +600,10 @@ public class CliCheck {
 
     @Test
     public void flame() {
-    	exec("flame", "-f", "target/test.stp", "-o", "target/flame.html");
+        ensureTestStp();
+        exec("flame", "-f", "target/test.stp", "-o", "target/flame.html");
     }
-    
+
     @Test
     public void dexp_help() {
         exec("dexp", "--help");
@@ -437,32 +611,39 @@ public class CliCheck {
 
     @Test
     public void dexp_tags() {
+        ensureTestStp();
         exec("dexp", "--tags", "-f",  "target/test.stp");
     }
 
-    @Test
+    @Test @CheckDuration(5)
     public void mprx() {
-    	exec("mprx", "-p", PID,  "-b", "14000");
+        exec("mprx", "-p", PID,  "-b", "34000");
     }
-    
+
     @Test
     public void vminfo_sysprops() {
-    	exec("vminfo", "-p", PID, "--sysprops");
+        exec("vminfo", "-p", PID, "--sysprops");
     }
 
     @Test
     public void vminfo_agentprops() {
-    	exec("vminfo", "-p", PID, "--agentprops");
+        exec("vminfo", "-p", PID, "--agentprops");
     }
 
     @Test
     public void vminfo_perf() {
-    	exec("vminfo", "-p", PID, "--perf");
+        exec("vminfo", "-p", PID, "--perf");
     }
 
     @Test
     public void vminfo_flags() {
-    	exec("vminfo", "-p", PID, "--flags");
+        Assume.assumeTrue(!JAVA_6 && !JAVA_7);
+        exec("vminfo", "-p", PID, "--flags");
+    }
+
+    @Test
+    public void hs_hsmbean() {
+        exec("hs", "-p", PID, "--enable-hotspot-mbean", "-X");
     }
 
     private void exec(String... cmd) {
@@ -474,7 +655,9 @@ public class CliCheck {
             sb.append(' ').append(escape(c));
         }
         System.out.println(sb);
-        Assert.assertTrue(sjk.start(cmd));      
+        stdOut.line(sb.toString());
+        stdOut.verify();
+        Assert.assertTrue(sjk.start(cmd));
     }
 
     private void fail(String... cmd) {
@@ -486,7 +669,7 @@ public class CliCheck {
             sb.append(' ').append(escape(c));
         }
         System.out.println(sb);
-        Assert.assertFalse(sjk.start(cmd));     
+        Assert.assertFalse(sjk.start(cmd));
     }
 
     private Object escape(String c) {
@@ -496,5 +679,5 @@ public class CliCheck {
         else {
             return c;
         }
-    }   
+    }
 }

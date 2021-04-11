@@ -23,11 +23,15 @@ import java.io.InputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.lang.Thread.State;
+import java.text.DecimalFormat;
+import java.text.DecimalFormatSymbols;
+import java.text.NumberFormat;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TimeZone;
 import java.util.regex.Pattern;
@@ -49,6 +53,7 @@ import org.gridkit.jvmtool.stacktrace.analytics.ThreadSnapshotCategorizer;
 import org.gridkit.jvmtool.stacktrace.analytics.ThreadSnapshotFilter;
 import org.gridkit.jvmtool.stacktrace.analytics.ThreadSplitAggregator;
 import org.gridkit.jvmtool.stacktrace.analytics.TraceFilterPredicateParser;
+import org.gridkit.jvmtool.stacktrace.analytics.WeigthCalculator;
 import org.gridkit.jvmtool.stacktrace.analytics.flame.FlameGraphGenerator;
 import org.gridkit.jvmtool.stacktrace.analytics.flame.RainbowColorPicker;
 import org.gridkit.util.formating.Formats;
@@ -265,8 +270,11 @@ public class StackSampleAnalyzerCmd implements CmdRef {
             @Parameter(names={"--histo"}, description="Print frame histogram")
             boolean run;
 
-            @Parameter(names={"--by-term"}, description="Sort frame histogram by terminal count")
+            @Parameter(names={"--by-term"}, description="Depicated. Sort frame histogram by terminal count (default)")
             boolean sortByTerm = false;
+
+            @Parameter(names={"--sort"}, description="Sort order for histogram TERM (default), OCCUR, FREQ")
+            HistoSort sortBy = null;
 
             @Override
             public boolean isSelected() {
@@ -277,7 +285,7 @@ public class StackSampleAnalyzerCmd implements CmdRef {
             public void run() {
                 try {
 
-                    StackHisto histo = new StackHisto();
+                    StackHisto histo = new StackHisto(dumpSource.getWeightCalculator());
                     for(Map.Entry<String, ThreadSnapshotFilter> entry: getNamedClasses().entrySet()) {
                         histo.addCondition(entry.getKey(), entry.getValue());
                     }
@@ -285,13 +293,28 @@ public class StackSampleAnalyzerCmd implements CmdRef {
                     EventReader<ThreadSnapshotEvent> reader = getFilteredReader();
                     int n = 0;
                     for(ThreadSnapshotEvent e: reader) {
-                        StackFrameList trace = e.stackTrace();
-                        histo.feed(trace);
+                        histo.feed(e);
                         ++n;
                     }
 
-                    if (sortByTerm) {
-            histo.setHistoOrder(StackHisto.BY_TERMINAL);
+                    if (sortByTerm && sortBy != null) {
+                        host.fail("--by-term and --sort are mutually exclusive");
+                    }
+
+                    if (sortBy == null) {
+                        sortBy = HistoSort.TERM;
+                    }
+
+                    switch (sortBy) {
+                        case FREQ:
+                            histo.setHistoOrder(StackHisto.BY_HITS);
+                            break;
+                        case OCCUR:
+                            histo.setHistoOrder(StackHisto.BY_OCCURENCE);
+                            break;
+                        case TERM:
+                            histo.setHistoOrder(StackHisto.BY_TERMINAL);
+                            break;
                     }
 
                     if (n > 0) {
@@ -340,7 +363,7 @@ public class StackSampleAnalyzerCmd implements CmdRef {
             public void run() {
                 try {
 
-                    FlameGraphGenerator fg = new FlameGraphGenerator();
+                    FlameGraphGenerator fg = new FlameGraphGenerator(dumpSource.getWeightCalculator());
                     if (rainbow != null && rainbow.size() > 0) {
                         ThreadSnapshotFilter[] filters = new ThreadSnapshotFilter[rainbow.size()];
                         CachingFilterFactory factory = new CachingFilterFactory();
@@ -353,8 +376,7 @@ public class StackSampleAnalyzerCmd implements CmdRef {
                     EventReader<ThreadSnapshotEvent> reader = getFilteredReader();
                     int n = 0;
                     for(ThreadSnapshotEvent e: reader) {
-                        StackFrameList trace = e.stackTrace();
-                        fg.feed(trace);
+                        fg.feed(e);
                         ++n;
                     }
 
@@ -393,6 +415,8 @@ public class StackSampleAnalyzerCmd implements CmdRef {
                 try {
 
                     ThreadSnapshotCategorizer cat = categorizer;
+                    WeigthCalculator calc = dumpSource.getWeightCalculator();
+
                     if (categorizer == null) {
                         if (!namedClasses.isEmpty()) {
                             SimpleCategorizer sc = new SimpleCategorizer();
@@ -415,9 +439,10 @@ public class StackSampleAnalyzerCmd implements CmdRef {
                     EventReader<ThreadSnapshotEvent> reader = getUnclassifiedReader();
                     for(ThreadSnapshotEvent e: reader) {
                         String cl = cat.categorize(e);
+                        long w = calc.getWeigth(e);
                         if (cl != null) {
-                            ++total;
-                            ++counters[bucketNames.indexOf(cl)];
+                            total += w;
+                            counters[bucketNames.indexOf(cl)] += w;
                         }
                     }
 
@@ -449,6 +474,15 @@ public class StackSampleAnalyzerCmd implements CmdRef {
             }
         }
 
+        private static final String[] DEFAULT_SUMMARY_INFO = {
+                "NAME",
+                "COUNT",
+                "CPU",
+                "ALLOC",
+                "S:RUNNABLE",
+                "NATIVE"
+        };
+
         class ThreadInfoCmd extends SsaCmd {
 
             @Parameter(names={"--thread-info"}, description="Per thread info summary")
@@ -456,6 +490,9 @@ public class StackSampleAnalyzerCmd implements CmdRef {
 
             @Parameter(names={"-si", "--summary-info"}, variableArity = true, description="List of summaries")
             List<String> summaryInfo;
+
+            @Parameter(names={"--numeric"}, description="Used plain decimal numbers for output")
+            boolean numeric;
 
             @Override
             public boolean isSelected() {
@@ -481,12 +518,9 @@ public class StackSampleAnalyzerCmd implements CmdRef {
                 try {
 
                     if (summaryInfo == null || summaryInfo.isEmpty()) {
-                        add("Name", COMMON.name());
-                        add("Count", COMMON.count(), new RightFormater());
-                        add("On CPU", COMMON.cpu(), new PercentFormater());
-                        add("Alloc ", COMMON.alloc(), new MemRateFormater());
-                        add("RUNNABLE", COMMON.threadState(State.RUNNABLE), new PercentFormater());
-                        add("Native", COMMON.inNative(), new PercentFormater());
+                        for (String si: DEFAULT_SUMMARY_INFO) {
+                            addSummary(si);
+                        }
                     }
                     else {
                         for(String si: summaryInfo) {
@@ -515,6 +549,7 @@ public class StackSampleAnalyzerCmd implements CmdRef {
 
                     if (n > 0) {
                         if (csvOutput) {
+                            tt.trim();
                             System.out.println(TextTable.formatCsv(tt));
                         }
                         else {
@@ -540,7 +575,7 @@ public class StackSampleAnalyzerCmd implements CmdRef {
                     add("Name", COMMON.name(n));
                 }
                 else if ("COUNT".equals(si)) {
-                    add("Count", COMMON.count(), new RightFormater());
+                    add("Count", COMMON.count(dumpSource.getWeightCalculator()), new RightFormater());
                 }
                 else if ("TSMIN".equals(si)) {
                     add("First time", COMMON.minTimestamp(), new DateFormater(timeZone()));
@@ -549,20 +584,20 @@ public class StackSampleAnalyzerCmd implements CmdRef {
                     add("Last time", COMMON.maxTimestamp(), new DateFormater(timeZone()));
                 }
                 else if ("CPU".equals(si)) {
-                    add("On CPU", COMMON.cpu(), new PercentFormater());
+                    add("On CPU", COMMON.cpu(), numeric ? new DecimalFormater(3) : new PercentFormater());
                 }
                 else if ("SYS".equals(si)) {
-                    add("System", COMMON.sysCpu(), new PercentFormater());
+                    add("System", COMMON.sysCpu(), numeric ? new DecimalFormater(3) : new PercentFormater());
                 }
                 else if ("ALLOC".equals(si)) {
-                    add("Alloc ", COMMON.alloc(), new MemRateFormater());
+                    add("Alloc ", COMMON.alloc(), numeric ? new DecimalFormater(0) : new MemRateFormater());
                 }
                 else if (si.startsWith("S:")) {
                     State st = State.valueOf(si.substring(2));
-                    add(st.toString(), COMMON.threadState(st), new PercentFormater());
+                    add(st.toString(), COMMON.threadState(st), numeric ? new DecimalFormater(3) : new PercentFormater());
                 }
                 else if ("NATIVE".equals(si)) {
-                    add("Native", COMMON.inNative(), new PercentFormater());
+                    add("Native", COMMON.inNative(), numeric ? new DecimalFormater(3) : new PercentFormater());
                 }
                 else if (Pattern.matches(".*=.*", si)) {
                     String[] p = si.split("[=]");
@@ -570,7 +605,7 @@ public class StackSampleAnalyzerCmd implements CmdRef {
                         badSummary(si);
                     }
                     ThreadSnapshotFilter ts = parseFilter(p[1]);
-                    add(p[0], COMMON.threadFilter(ts), new PercentFormater());
+                    add(p[0], COMMON.threadFilter(ts, dumpSource.getWeightCalculator()), numeric ? new DecimalFormater(3) : new PercentFormater());
                 }
                 else if ("FREQ".equals(si)) {
                     add("Freq.", COMMON.frequency(), new DecimalFormater(1));
@@ -678,10 +713,16 @@ public class StackSampleAnalyzerCmd implements CmdRef {
 
     static class DecimalFormater implements SummaryFormater {
 
-        int n;
+        NumberFormat fmt;
 
         public DecimalFormater(int n) {
-            this.n = n;
+            DecimalFormat df = new DecimalFormat("#.#", new DecimalFormatSymbols(Locale.ROOT));
+            df.setGroupingUsed(false);
+            df.setMaximumIntegerDigits(Integer.MAX_VALUE);
+            df.setMaximumFractionDigits(n);
+            df.setDecimalSeparatorAlwaysShown(false);
+
+            fmt = df;
         }
 
         @Override
@@ -690,7 +731,7 @@ public class StackSampleAnalyzerCmd implements CmdRef {
                 return "\t" + summary;
             }
             else if (summary instanceof Number) {
-                return "\t" + String.format("%." + n +"f", ((Number) summary).doubleValue());
+                return "\t" + fmt.format(summary);
             }
             else {
                 return "";
@@ -744,5 +785,11 @@ public class StackSampleAnalyzerCmd implements CmdRef {
                 return "";
             }
         }
+    }
+
+    public static enum HistoSort {
+        TERM,
+        OCCUR,
+        FREQ
     }
 }
