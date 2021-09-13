@@ -24,6 +24,9 @@ import javax.management.MalformedObjectNameException;
 import javax.management.NotCompliantMBeanException;
 import javax.management.ObjectName;
 
+import org.gridkit.sjk.test.console.StopCommandAfter;
+import org.gridkit.sjk.test.console.junit4.CliTestRule;
+import org.gridkit.sjk.test.console.junit4.ConsoleRule;
 import org.junit.Assert;
 import org.junit.Assume;
 import org.junit.FixMethodOrder;
@@ -52,13 +55,10 @@ public class CliCheck {
     }
 
     @Rule
-    public CliCheckRule rule = new CliCheckRule();
+    public CliTestRule cli = new CliTestRule(SJK.class);
 
-    @Rule
-    public ConsoleRule stdOut = ConsoleRule.out();
-
-    @Rule
-    public ConsoleRule stdErr = ConsoleRule.err();
+    public ConsoleRule stdOut = cli.out;
+    public ConsoleRule stdErr = cli.err;
 
     private String call1arg1;
     private String call2arg1;
@@ -105,11 +105,27 @@ public class CliCheck {
     @Test
     public void help() {
         exec("--help");
+        stdOut.line("Usage: <main class> [options] [command] [command options]");
     }
 
     @Test
     public void list_commands() {
         exec("--commands");
+        stdOut.lineContains("dexp");
+        stdOut.lineContains("flame");
+        stdOut.lineContains("gc");
+        stdOut.lineContains("hh");
+        stdOut.lineContains("hs");
+        stdOut.lineContains("jfr2json");
+        stdOut.lineContains("jps");
+        stdOut.lineContains("mprx");
+        stdOut.lineContains("mx");
+        stdOut.lineContains("mxping");
+        stdOut.lineContains("ssa");
+        stdOut.lineContains("stcap");
+        stdOut.lineContains("stcpy");
+        stdOut.lineContains("ttop");
+        stdOut.lineContains("vminfo");
     }
 
     @Test
@@ -131,15 +147,17 @@ public class CliCheck {
         exec("jps", "-fp", "my.*=" + KEY);
 
         // some PID something expected
-        stdOut.lineEx("[0-9]+\\s.*junit.*");
+        stdOut.skip();
+        stdOut.lineEx("[0-9]+\\s.*(junit|surefire).*");
     }
 
     @Test
     public void jps_filter2_by_desc() {
-        exec("jps", "-fd", "*junit*");
+        exec("jps", "-fd", "*");
 
         // some PID something expected
-        stdOut.lineEx("[0-9]+\\s.*junit.*");
+        stdOut.skip();
+        stdOut.lineEx("[0-9]+\\s.*(junit|surefire).*");
     }
 
     @Test
@@ -152,47 +170,78 @@ public class CliCheck {
         exec("jps", "-pd", "PID", "MAIN", "XMaxHeapSize", "XBackgroundCompilation");
     }
 
-    @Test @CheckDuration(10)
+    @Test @StopCommandAfter(10)
     public void ttop_self() {
 
         exec("ttop", "-p", PID, "-X");
+        stdOut.skip();
+        stdOut.line("Monitoring threads ...");
+        stdOut.skip(1);
+        stdOut.lineContains("Process summary");
+        stdOut.lineContains("process cpu=");
+        stdOut.lineContains("application cpu=");
+        stdOut.lineContains("other: cpu=");
+        stdOut.lineContains("thread count:");
+        stdOut.lineContains("GC time=");
+        stdOut.lineContains("heap allocation rate");
+        stdOut.lineContains("safe point rate");
+        stdOut.lineContains("safe point sync time");
     }
 
-    @Test @CheckDuration(10)
+    @Test @StopCommandAfter(10)
     public void ttop_top_N_cpu() {
 
         exec("ttop", "-p", PID, "-o", "CPU", "-n", "10");
     }
 
-    @Test @CheckDuration(10)
+    @Test @StopCommandAfter(10)
     public void ttop_top_N_alloc() {
 
         exec("ttop", "-p", PID, "-o", "ALLOC", "-n", "10");
     }
 
-    @Test @CheckDuration(10)
+    @Test @StopCommandAfter(10)
     public void ttop_top_N_filtered() {
         exec("ttop", "-p", PID, "-f", "*RMI*", "-o", "CPU", "-n", "10");
     }
 
-    @Test @CheckDuration(10) @Ignore
+    @Test @StopCommandAfter(10)
     public void gc_self() {
         exec("gc", "-p", PID);
+        stdOut.line("MBean server connected");
+        stdOut.line("Collecting GC stats ...");
     }
 
     @Test
     public void hh_self() {
         exec("hh", "-p", PID);
+        stdOut.skip();
+        stdOut.lineContains("#", "Instances", "Bytes", "Type");
+        stdOut.skip();
+        stdOut.lineContains("Total");
     }
 
     @Test
     public void hh_dead_N_self() {
         exec("hh", "-p", PID, "--dead", "-n", "20");
+        stdOut.skip();
+        stdOut.lineContains("#", "Instances", "Bytes", "Type");
+        stdOut.skip();
+        stdOut.lineContains("20:");
+        stdOut.lineContains("Total");
     }
 
     @Test
     public void hh_dead_young_N_self() {
         exec("hh", "-p", PID, "--dead-young", "-n", "20", "-d", "10s");
+        stdOut.skip();
+        stdOut.line("Gathering young garbage ...");
+        stdOut.skip();
+        stdOut.line("Garbage histogram for last 10s");
+        stdOut.lineContains("#", "Instances", "Bytes", "Type");
+        stdOut.skip();
+        stdOut.lineContains("20:");
+        stdOut.lineContains("Total");
     }
 
     @Test
@@ -202,8 +251,8 @@ public class CliCheck {
         stdOut.skip();
         stdOut.line("Garbage histogram for last 1s");
         stdOut.skip();
-        stdOut.lineStartsEx("[ ]*20:");
-        stdOut.lineStartsEx("[ ]*Total");
+        stdOut.lineContains("20:");
+        stdOut.lineContains("Total");
     }
 
     @Test
@@ -356,9 +405,32 @@ public class CliCheck {
 
     public void ensureTestStp() {
         if (!new File("target/test.stp").isFile()) {
+            Thread testThread = new Thread(new Runnable() {
+
+                @Override
+                public void run() {
+                    while(true) {
+                        try {
+                            Thread.sleep(10000);
+                        } catch (InterruptedException e) {
+                            break;
+                        }
+                    }
+                }
+            });
+            testThread.setName("TestThread");
+            testThread.start();
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
             exec("stcap", "-p", PID, "-o", "target/test.stp");
+            testThread.interrupt();
             stdOut.verify();
+            stdOut.clean();
             stdErr.verify();
+            stdErr.clean();
         }
     }
 
@@ -367,12 +439,14 @@ public class CliCheck {
             exec("stcap", "-p", PID, "-l", "500", "-o", "target/test500.stp");
             stdOut.verify();
             stdErr.verify();
+            stdOut.clean();
+            stdErr.clean();
         }
     }
 
     @Test
     public void stcap() {
-        exec("stcap", "-p", PID, "-o", "target/test.stp");
+        exec("stcap", "-p", PID, "-o", "target/test-stcap.stp");
     }
 
     @Test
@@ -382,12 +456,12 @@ public class CliCheck {
 
     @Test
     public void stcap_rotate() {
-        exec("stcap", "-p", PID, "-r", "5000", "-o", "target/test.stp");
+        exec("stcap", "-p", PID, "-r", "5000", "-o", "target/test-stcap.stp");
     }
 
     @Test
     public void stcap_rotate_limit() {
-        exec("stcap", "-p", PID, "-l", "50000", "-r", "5000", "-o", "target/test.stp");
+        exec("stcap", "-p", PID, "-l", "50000", "-r", "5000", "-o", "target/test-stcap.stp");
     }
 
     @Test
@@ -615,9 +689,13 @@ public class CliCheck {
         exec("dexp", "--tags", "-f",  "target/test.stp");
     }
 
-    @Test @CheckDuration(5)
+    @Test @StopCommandAfter(5)
     public void mprx() {
         exec("mprx", "-p", PID,  "-b", "34000");
+
+        stdOut.line("Connected to target JMX endpoint");
+        stdOut.line("Open proxy JMX end point on URI - service:jmx:rmi://0.0.0.0:34000/jmxrmi");
+        stdOut.line("JMX proxy is running - 0.0.0.0:34000");
     }
 
     @Test
@@ -647,37 +725,10 @@ public class CliCheck {
     }
 
     private void exec(String... cmd) {
-        SJK sjk = new SJK();
-        sjk.suppressSystemExit();
-        StringBuilder sb = new StringBuilder();
-        sb.append("SJK");
-        for(String c: cmd) {
-            sb.append(' ').append(escape(c));
-        }
-        System.out.println(sb);
-        stdOut.line(sb.toString());
-        stdOut.verify();
-        Assert.assertTrue(sjk.start(cmd));
+        cli.exec(cmd);
     }
 
     private void fail(String... cmd) {
-        SJK sjk = new SJK();
-        sjk.suppressSystemExit();
-        StringBuilder sb = new StringBuilder();
-        sb.append("SJK");
-        for(String c: cmd) {
-            sb.append(' ').append(escape(c));
-        }
-        System.out.println(sb);
-        Assert.assertFalse(sjk.start(cmd));
-    }
-
-    private Object escape(String c) {
-        if (c.split("\\s").length > 1) {
-            return '\"' + c + '\"';
-        }
-        else {
-            return c;
-        }
+        cli.fail(cmd);
     }
 }
