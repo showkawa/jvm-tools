@@ -28,7 +28,7 @@
 
   <groupId>org.gridkit.jvmtool</groupId>
   <artifactId>jvmtool-umbrella-pom</artifactId>
-  <version>0.20-SNAPSHOT</version>
+  <version>0.21-SNAPSHOT</version>
   <name>${project.groupId}::${project.artifactId}</name>
   <description>JVM tools, parent project</description>
   <packaging>pom</packaging>
@@ -383,7 +383,7 @@
               <artifactId>maven-surefire-plugin</artifactId>
               <version>3.0.0-M5</version>
               <configuration>
-                <forkNode implementation="org.apache.maven.plugin.surefire.extensions.SurefireForkNodeFactory"/>
+                <forkNode implementation="org.apache.maven.plugin.surefire.extensions.SurefireForkNodeFactory" />
                 <!-- additional encantation to work around Java 11 nonsense -->
                 <argLine>-Djdk.attach.allowAttachSelf=true --add-opens java.base/jdk.internal.perf=ALL-UNNAMED --add-opens jdk.attach/sun.tools.attach=ALL-UNNAMED -Dsjk.breakCage=false</argLine>
               </configuration>
